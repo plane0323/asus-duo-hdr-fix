@@ -52,6 +52,122 @@ public static class HdrState {
 }
 '@
 
+# ---------------- ScreenPad brightness via ATKACPI (ASUS WMI device ids) ----------------
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class AtkAcpi
+{
+    const string FILE_NAME      = @"\\.\ATKACPI";
+    const uint   CONTROL_CODE   = 0x0022240C;
+    const uint   DSTS_METHOD    = 0x53545344;
+    const uint   DEVS_METHOD    = 0x53564544;
+    const uint   GENERIC_READ   = 0x80000000;
+    const uint   GENERIC_WRITE  = 0x40000000;
+    const uint   OPEN_EXISTING  = 3;
+    const uint   FILE_ATTRIBUTE_NORMAL = 0x80;
+    const uint   FILE_SHARE_READ  = 1;
+    const uint   FILE_SHARE_WRITE = 2;
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr sa, uint disp, uint flags, IntPtr tmpl);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool DeviceIoControl(IntPtr h, uint code, byte[] inBuf, uint inLen, byte[] outBuf, uint outLen, ref uint returned, IntPtr ov);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CloseHandle(IntPtr h);
+
+    static IntPtr Open()
+    {
+        return CreateFile(FILE_NAME, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                          IntPtr.Zero, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+    }
+
+    static byte[] Call(IntPtr h, uint method, byte[] args)
+    {
+        byte[] inBuf = new byte[8 + args.Length];
+        byte[] outBuf = new byte[16];
+        BitConverter.GetBytes(method).CopyTo(inBuf, 0);
+        BitConverter.GetBytes((uint)args.Length).CopyTo(inBuf, 4);
+        Array.Copy(args, 0, inBuf, 8, args.Length);
+        uint ret = 0;
+        if (!DeviceIoControl(h, CONTROL_CODE, inBuf, (uint)inBuf.Length, outBuf, (uint)outBuf.Length, ref ret, IntPtr.Zero))
+            throw new Exception("DeviceIoControl err=" + Marshal.GetLastWin32Error());
+        return outBuf;
+    }
+
+    // returns raw value minus 0x10000, or -1 when unsupported
+    public static int Read(uint deviceId)
+    {
+        IntPtr h = Open();
+        if (h == new IntPtr(-1)) return -1;
+        try
+        {
+            byte[] args = new byte[8];
+            BitConverter.GetBytes(deviceId).CopyTo(args, 0);
+            return BitConverter.ToInt32(Call(h, DSTS_METHOD, args), 0) - 65536;
+        }
+        catch { return -1; }
+        finally { CloseHandle(h); }
+    }
+
+    // returns 1 when accepted, otherwise an error/result code
+    public static int Write(uint deviceId, int value)
+    {
+        IntPtr h = Open();
+        if (h == new IntPtr(-1)) return -1;
+        try
+        {
+            byte[] args = new byte[8];
+            BitConverter.GetBytes(deviceId).CopyTo(args, 0);
+            BitConverter.GetBytes((uint)value).CopyTo(args, 4);
+            return BitConverter.ToInt32(Call(h, DEVS_METHOD, args), 0);
+        }
+        catch { return -1; }
+        finally { CloseHandle(h); }
+    }
+}
+'@
+
+$script:SpStateFile = Join-Path $ROOT 'eotf_brightness.state'
+$script:SpLast = -1
+$script:SpMinPct = 4
+$script:SpBurstUntil = [datetime]::MinValue
+$script:SpEnabled = $true
+
+function Get-SpEnabled {
+    if (Test-Path -LiteralPath $script:SpStateFile) {
+        try { return ((Get-Content -LiteralPath $script:SpStateFile -Raw).Trim() -ne '0') } catch { }
+    }
+    return $true
+}
+function Set-SpEnabled([bool]$on) {
+    try {
+        $v = if ($on) { '1' } else { '0' }
+        $v | Out-File -LiteralPath $script:SpStateFile -Encoding ascii -Force
+    } catch { }
+}
+function Get-MainBrightness {
+    $m = Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBrightness -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $m) { return $null }
+    return [int]$m.CurrentBrightness
+}
+function Sync-ScreenPad {
+    if (-not $script:SpEnabled) { return }
+    $main = Get-MainBrightness
+    if ($null -eq $main) { return }
+    $pct = if ($main -le 50) { $main * 2 } else { 100 }
+    if ($pct -lt $script:SpMinPct) { $pct = $script:SpMinPct }
+    $val = [int][math]::Round($pct * 255 / 100)
+    $cur = -1
+    try { $cur = ([AtkAcpi]::Read([uint32]0x00050032)) -band 0xFF } catch { }
+    if ($cur -eq $val) { $script:SpLast = $val; return }
+    $r = -1
+    try { $r = [AtkAcpi]::Write([uint32]0x00050032, $val) } catch { TL "screenpad exc: $($_.Exception.Message)"; return }
+    if ($r -eq 1) { $script:SpLast = $val; $script:SpBurstUntil = (Get-Date).AddSeconds(3); TL "screenpad -> $val/255 (main=$main%)" }
+    else { TL "screenpad write failed result=$r" }
+}
+
 function Get-HdrEnabled {
     try { $v = [HdrState]::AnyHdr(); if ($v -lt 0) { return $null }; return ($v -eq 1) } catch { return $null }
 }
@@ -229,6 +345,23 @@ function Build-Menu {
     })
     [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 
+    $sp = Get-SpEnabled
+    $spItem = $menu.Items.Add(('副屏亮度跟随主屏：' + $(if ($sp) { '已开启 → 点击关闭' } else { '已关闭 → 点击开启' })))
+    $spItem.Checked = $sp
+    $spItem.add_Click({
+        $now = Get-SpEnabled
+        Set-SpEnabled (-not $now)
+        $script:SpEnabled = -not $now
+        TL "screenpad sync -> $(-not $now)"
+        if ($now) {
+            try { [void][AtkAcpi]::Write([uint32]0x00050032, 255) } catch { }
+            $script:SpLast = -1
+        } else {
+            $script:SpLast = -1
+            Sync-ScreenPad
+        }
+    })
+
     $auto = Get-AutostartEnabled
     $ai = $menu.Items.Add(('开机自启：' + $(if ($auto) { '已开启 → 点击关闭' } else { '已关闭 → 点击开启' })))
     $ai.Checked = $auto
@@ -292,6 +425,23 @@ $poll.add_Tick({
     }
 })
 $poll.Start()
+
+# ---------------- ScreenPad brightness timer ----------------
+$script:SpEnabled = Get-SpEnabled
+$brT = New-Object System.Windows.Forms.Timer
+$brT.Interval = 300
+$brT.add_Tick({
+    try {
+        Sync-ScreenPad
+        $fast = (((Get-Date) -lt $script:SpBurstUntil) -or ($script:SpPeekCount -gt 0))
+        if (-not $fast) {
+            $brT.Stop()
+            TL 'idle -> polling stopped'
+        }
+    } catch { }
+})
+$brT.Start()
+
 
 # ---------------- test mode ----------------
 if ($TestMode) {
@@ -366,4 +516,72 @@ $form.ShowInTaskbar = $false
 $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
 $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
 $form.Size = New-Object System.Drawing.Size(1, 1)
+# ---------------- panel hooks: quick settings / settings app ----------------
+# SHOW = 0x8002, HIDE = 0x8003
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class PanelHook
+{
+    public delegate void WinEventDelegate(IntPtr hHook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
+    [DllImport("user32.dll")] static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr hmod, WinEventDelegate del, uint pid, uint tid, uint flags);
+    [DllImport("user32.dll")] static extern bool UnhookWinEvent(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hWnd, StringBuilder sb, int max);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int max);
+
+    static WinEventDelegate _del;
+    static IntPtr _hook;
+    public static Action<uint, string, string> Sink;
+
+    public static bool Install(Action<uint, string, string> sink)
+    {
+        Sink = sink;
+        _del = (h, ev, hwnd, idObj, idChild, thread, time) =>
+        {
+            if (hwnd == IntPtr.Zero) return;
+            try
+            {
+                var cls = new StringBuilder(128);
+                GetClassName(hwnd, cls, 128);
+                string c = cls.ToString();
+                if (c != "ControlCenterWindow" && c != "ApplicationFrameWindow") return;
+                var txt = new StringBuilder(256);
+                GetWindowText(hwnd, txt, 256);
+                var s = Sink;
+                if (s != null) s(ev, c, txt.ToString());
+            }
+            catch { }
+        };
+        _hook = SetWinEventHook(0x8002, 0x8003, IntPtr.Zero, _del, 0, 0, 0);
+        return _hook != IntPtr.Zero;
+    }
+    public static void Uninstall() { if (_hook != IntPtr.Zero) { UnhookWinEvent(_hook); _hook = IntPtr.Zero; } }
+}
+'@
+
+$script:SpPeekCount = 0
+
+try {
+    $panelAction = [Action[uint32, string, string]] {
+        param($ev, $cls, $txt)
+        # 快速设置面板，或「设置」应用里的显示页
+        $watched = ($cls -eq 'ControlCenterWindow') -or ($cls -eq 'ApplicationFrameWindow' -and $txt -match '设置|Settings')
+        if (-not $watched) { return }
+        if ($ev -eq 0x8002) {
+            $script:SpPeekCount++
+            try { if (-not $brT.Enabled) { $brT.Interval = 300; $brT.Start() } } catch { }
+            TL "panel shown ($cls) -> fast poll, open=$($script:SpPeekCount)"
+        } elseif ($ev -eq 0x8003) {
+            if ($script:SpPeekCount -gt 0) { $script:SpPeekCount-- }
+            if ($script:SpPeekCount -eq 0) { TL "panel closed ($cls) -> back to idle" }
+        }
+    }
+    $peekOk = [PanelHook]::Install($panelAction)
+    TL "panel hook installed = $peekOk"
+} catch {
+    TL "panel hook failed: $($_.Exception.Message)"
+}
+
 [System.Windows.Forms.Application]::Run($form)
