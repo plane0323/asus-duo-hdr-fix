@@ -1,0 +1,85 @@
+name: Bug 报告
+description: 不工作 / 死机 / 黑屏 / 服务没起来 / 补丁没生效
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。硬件相关的问题**必须**填写机型和显卡，否则很难定位。
+
+        提交前请先看一遍 README 的「风险与免责」和「已知限制」。
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 版本
+      description: 运行 `winver`，把完整版本号贴进来
+      placeholder: "Windows 11 26H2 (OS 内部版本 26300.9818)"
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: 机型
+      placeholder: "ASUS ROG Zephyrus Duo 16 GX650PY"
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: 显卡
+      description: 设备管理器 → 显示适配器，列出全部
+      placeholder: "RTX 4090 Laptop + Radeon 610M"
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 出问题的环节
+      multiple: true
+      options:
+        - 安装 / 卸载脚本
+        - 开机自启
+        - 打补丁（Gamma / 关闭补丁）
+        - MPO 开关
+        - 副屏栈启停
+        - HDR 切换后没自动重打
+        - 托盘界面
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: symptoms
+    attributes:
+      label: 现象与复现步骤
+      description: 做了什么、期望什么、实际什么
+      placeholder: |
+        1. 登录后
+        2. 按 Win+Alt+B 关闭 HDR
+        3. ...
+        期望：...
+        实际：...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: |
+        `C:\Program Files\dwm_eotf_rs\tray.log` 与 `eotf_apply.log` 的相关片段。
+        请勿粘贴完整日志，只贴出问题发生前后的部分。
+      render: text
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 我已经搜过现有 Issue，没有重复
+          required: true
+        - label: 我已阅读 README 中的「已知限制」，确认不是预期行为
+          required: true

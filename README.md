@@ -97,6 +97,12 @@ Windows 下修复「开启 HDR 后 SDR 内容发灰发白」的托盘工具。
 - 每次打补丁会黑屏约 6 秒（停服务 + 重启 DWM 的必然代价）
 - 如果托盘未能启动，副屏栈会保持手动启动状态（面板仍亮，但 ScreenPad 控制功能不可用），可用 `uninstall.ps1` 恢复
 
+## 参与贡献
+
+- 提 Issue / PR 前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)
+- 安全问题请勿公开报告，见 [SECURITY.md](SECURITY.md)
+- 版本变更见 [CHANGELOG.md](CHANGELOG.md)
+
 ## 致谢与许可
 
 - 补丁核心来自 [SERGEYDJUM/dwm_eotf_rs](https://github.com/SERGEYDJUM/dwm_eotf_rs)（MIT，© 2026 Sergey Dzhumageldiev），本项目不打包其二进制，需单独获取

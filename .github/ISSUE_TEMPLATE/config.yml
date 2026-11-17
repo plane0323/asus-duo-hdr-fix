@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/plane0323/asus-duo-hdr-fix/security/advisories/new
+    about: 请勿通过公开 Issue 报告安全问题，见 SECURITY.md
+  - name: 上游项目 dwm_eotf_rs
+    url: https://github.com/SERGEYDJUM/dwm_eotf_rs/issues
+    about: 补丁算法、着色器匹配等上游问题请报到上游
