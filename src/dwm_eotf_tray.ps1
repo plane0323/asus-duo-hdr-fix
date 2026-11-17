@@ -132,6 +132,106 @@ public static class AtkAcpi
 $script:SpStateFile = Join-Path $ROOT 'eotf_brightness.state'
 $script:SpLast = -1
 $script:SpMinPct = 4
+$script:SpSdrFull = 28
+$script:SpSdrFloorVal = 84
+$script:SpHdrFull = 50
+$script:SpHdrFloorVal = 42
+# ---------------- brightness mapping config ----------------
+$script:SpCfgFile = Join-Path $ROOT 'eotf_brightness.json'
+function Load-SpConfig {
+    if (-not (Test-Path -LiteralPath $script:SpCfgFile)) { return }
+    try {
+        $j = Get-Content -LiteralPath $script:SpCfgFile -Raw | ConvertFrom-Json
+        if ($null -ne $j.sdrFull)  { $script:SpSdrFull     = [int]$j.sdrFull }
+        if ($null -ne $j.sdrFloor) { $script:SpSdrFloorVal = [int]$j.sdrFloor }
+        if ($null -ne $j.hdrFull)  { $script:SpHdrFull     = [int]$j.hdrFull }
+        if ($null -ne $j.hdrFloor) { $script:SpHdrFloorVal = [int]$j.hdrFloor }
+    } catch { TL "config load failed: $($_.Exception.Message)" }
+}
+function Save-SpConfig {
+    try {
+        @{
+            sdrFull  = $script:SpSdrFull
+            sdrFloor = $script:SpSdrFloorVal
+            hdrFull  = $script:SpHdrFull
+            hdrFloor = $script:SpHdrFloorVal
+        } | ConvertTo-Json | Out-File -LiteralPath $script:SpCfgFile -Encoding utf8 -Force
+    } catch { TL "config save failed: $($_.Exception.Message)" }
+}
+function Show-SpSettings {
+    $f = New-Object System.Windows.Forms.Form
+    $f.Text = '副屏亮度映射'
+    $f.ClientSize = New-Object System.Drawing.Size(348, 250)
+    $f.StartPosition = 'CenterScreen'
+    $f.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $f.MaximizeBox = $false
+    $f.MinimizeBox = $false
+    $f.TopMost = $true
+
+    $defs = @(
+        @{ text = 'SDR：主屏达到此值 → 副屏满亮'; value = $script:SpSdrFull;     max = 100; y = 14;  suffix = '%' },
+        @{ text = 'SDR：主屏最低时 → 副屏下限';   value = $script:SpSdrFloorVal; max = 255; y = 46;  suffix = '' },
+        @{ text = 'HDR：主屏达到此值 → 副屏满亮'; value = $script:SpHdrFull;     max = 100; y = 96;  suffix = '%' },
+        @{ text = 'HDR：主屏最低时 → 副屏下限';   value = $script:SpHdrFloorVal; max = 255; y = 128; suffix = '' }
+    )
+
+    $nums = @()
+    foreach ($d in $defs) {
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text = $d.text
+        $lbl.Location = New-Object System.Drawing.Point(16, ($d.y + 3))
+        $lbl.Size = New-Object System.Drawing.Size(220, 20)
+        $f.Controls.Add($lbl)
+
+        $n = New-Object System.Windows.Forms.NumericUpDown
+        $n.Minimum = 1
+        $n.Maximum = $d.max
+        $n.Value = [decimal]$d.value
+        $n.Location = New-Object System.Drawing.Point(242, $d.y)
+        $n.Size = New-Object System.Drawing.Size(88, 23)
+        $f.Controls.Add($n)
+        $nums += $n
+    }
+
+    $hint = New-Object System.Windows.Forms.Label
+    $hint.Text = '下限单位为 0-255（10 ≈ 4%，255 = 满亮）'
+    $hint.Location = New-Object System.Drawing.Point(16, 160)
+    $hint.Size = New-Object System.Drawing.Size(314, 20)
+    $hint.ForeColor = [System.Drawing.Color]::Gray
+    $f.Controls.Add($hint)
+
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = '保存'
+    $ok.Location = New-Object System.Drawing.Point(130, 198)
+    $ok.Size = New-Object System.Drawing.Size(90, 30)
+    $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $f.Controls.Add($ok)
+
+    $cancel = New-Object System.Windows.Forms.Button
+    $cancel.Text = '取消'
+    $cancel.Location = New-Object System.Drawing.Point(232, 198)
+    $cancel.Size = New-Object System.Drawing.Size(90, 30)
+    $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $f.Controls.Add($cancel)
+
+    $f.AcceptButton = $ok
+    $f.CancelButton = $cancel
+
+    if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $script:SpSdrFull     = [int]$nums[0].Value
+        $script:SpSdrFloorVal = [int]$nums[1].Value
+        $script:SpHdrFull     = [int]$nums[2].Value
+        $script:SpHdrFloorVal = [int]$nums[3].Value
+        if ($script:SpSdrFull -lt 1) { $script:SpSdrFull = 1 }
+        if ($script:SpHdrFull -lt 1) { $script:SpHdrFull = 1 }
+        Save-SpConfig
+        TL "mapping saved: sdr=$($script:SpSdrFull)/$($script:SpSdrFloorVal) hdr=$($script:SpHdrFull)/$($script:SpHdrFloorVal)"
+        try { Sync-ScreenPad } catch { }
+    }
+    $f.Dispose()
+}
+Load-SpConfig
+
 $script:SpBurstUntil = [datetime]::MinValue
 $script:SpEnabled = $true
 
@@ -156,15 +256,32 @@ function Sync-ScreenPad {
     if (-not $script:SpEnabled) { return }
     $main = Get-MainBrightness
     if ($null -eq $main) { return }
-    $pct = if ($main -le 50) { $main * 2 } else { 100 }
-    if ($pct -lt $script:SpMinPct) { $pct = $script:SpMinPct }
-    $val = [int][math]::Round($pct * 255 / 100)
+    $hdr = Get-HdrEnabled
+    if ($hdr -eq $true) {
+        # HDR: 主屏 0..SpHdrFull 线性映射到 SpHdrFloorVal..255
+        if ($main -ge $script:SpHdrFull) {
+            $val = 255
+        } else {
+            $val = [int][math]::Round($script:SpHdrFloorVal + ($main * (255 - $script:SpHdrFloorVal) / $script:SpHdrFull))
+        }
+        if ($val -gt 255) { $val = 255 }
+        if ($val -lt $script:SpHdrFloorVal) { $val = $script:SpHdrFloorVal }
+    } else {
+        # SDR: 主屏 0..SpSdrFull 线性映射到 SpSdrFloorVal..255
+        if ($script:SpSdrFull -le 0) {
+            $val = 255
+        } else {
+            $val = [int][math]::Round($script:SpSdrFloorVal + ($main * (255 - $script:SpSdrFloorVal) / $script:SpSdrFull))
+        }
+        if ($val -gt 255) { $val = 255 }
+        if ($val -lt $script:SpSdrFloorVal) { $val = $script:SpSdrFloorVal }
+    }
     $cur = -1
     try { $cur = ([AtkAcpi]::Read([uint32]0x00050032)) -band 0xFF } catch { }
     if ($cur -eq $val) { $script:SpLast = $val; return }
     $r = -1
     try { $r = [AtkAcpi]::Write([uint32]0x00050032, $val) } catch { TL "screenpad exc: $($_.Exception.Message)"; return }
-    if ($r -eq 1) { $script:SpLast = $val; $script:SpBurstUntil = (Get-Date).AddSeconds(3); TL "screenpad -> $val/255 (main=$main%)" }
+    if ($r -eq 1) { $script:SpLast = $val; $script:SpBurstUntil = (Get-Date).AddSeconds(3); TL "screenpad -> $val/255 (main=$main% mode=$(if ($hdr -eq $true) { 'hdr' } else { 'sdr' }))" }
     else { TL "screenpad write failed result=$r" }
 }
 
@@ -345,6 +462,8 @@ function Build-Menu {
     })
     [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 
+    $mapItem = $menu.Items.Add('亮度映射设置…')
+    $mapItem.add_Click({ try { Show-SpSettings } catch { TL "settings error: $($_.Exception.Message)" } })
     $sp = Get-SpEnabled
     $spItem = $menu.Items.Add(('副屏亮度跟随主屏：' + $(if ($sp) { '已开启 → 点击关闭' } else { '已关闭 → 点击开启' })))
     $spItem.Checked = $sp
@@ -487,6 +606,8 @@ function On-DisplayChangedCore {
         if ($now -eq $script:LastHdr) { return }
         $script:LastHdr = $now
         TL "hdr changed -> $now (SystemEvents.DisplaySettingsChanged)"
+        try { $script:SpBurstUntil = (Get-Date).AddSeconds(6); if (-not $brT.Enabled) { $brT.Interval = 300; $brT.Start() } } catch { }
+        try { Sync-ScreenPad } catch { }
         if ($now) {
             TL 'hdr ON -> re-apply patch'
             Start-Apply 'patch' (Get-LastGamma)
