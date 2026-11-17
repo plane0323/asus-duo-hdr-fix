@@ -1,0 +1,57 @@
+name: lint
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  psanalyzer:
+    name: PSScriptAnalyzer
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -ErrorAction Stop
+
+      - name: Analyze
+        shell: pwsh
+        run: |
+          $results = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error, Warning -ExcludeRule PSAvoidUsingWriteHost
+          if (-not $results) {
+            Write-Host "No findings."
+            exit 0
+          }
+          $results | Format-Table -AutoSize
+          $errors = @($results | Where-Object { $_.Severity -eq 'Error' })
+          Write-Host ""
+          Write-Host ("errors={0} warnings={1}" -f $errors.Count, @($results).Count)
+          if ($errors.Count -gt 0) {
+            throw "PSScriptAnalyzer reported $($errors.Count) error(s)"
+          }
+
+      - name: Verify UTF-8 BOM on scripts containing non-ASCII
+        shell: pwsh
+        run: |
+          # 含中文的 .ps1 必须带 BOM，否则 PowerShell 5.1 会按 GBK 解析
+          $bad = @()
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $bytes = [IO.File]::ReadAllBytes($_.FullName)
+            $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+            $hasNonAscii = ($bytes | Where-Object { $_ -gt 127 }).Count -gt 0
+            if ($hasNonAscii -and -not $hasBom) { $bad += $_.FullName }
+          }
+          if ($bad.Count -gt 0) {
+            $bad | ForEach-Object { Write-Host "missing BOM: $_" }
+            throw "some scripts contain non-ASCII but are missing a UTF-8 BOM"
+          }
+          Write-Host "all good."
