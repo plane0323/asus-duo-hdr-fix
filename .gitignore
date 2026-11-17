@@ -1,0 +1,6 @@
+*.log
+*.bak
+*.tmp
+eotf_state.json
+*.exe
+.vs/
