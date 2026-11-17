@@ -1,4 +1,6 @@
-# dwm-eotf-tray
+# ASUS Duo HDR Fix 
+
+> 面向 ASUS 冰刃 Duo / 双屏机型：应用 dwm_eotf_rs 的 HDR 转换曲线补丁，同时绕开会让整机死锁的 DWM 重启问题。
 
 Windows 下修复「开启 HDR 后 SDR 内容发灰发白」的托盘工具。
 
