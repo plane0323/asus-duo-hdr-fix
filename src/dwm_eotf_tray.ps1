@@ -146,6 +146,7 @@ function Load-SpConfig {
         if ($null -ne $j.sdrFloor) { $script:SpSdrFloorVal = [int]$j.sdrFloor }
         if ($null -ne $j.hdrFull)  { $script:SpHdrFull     = [int]$j.hdrFull }
         if ($null -ne $j.hdrFloor) { $script:SpHdrFloorVal = [int]$j.hdrFloor }
+        if ($null -ne $j.fadeMs)   { $script:SpFadeMs = [int]$j.fadeMs }
     } catch { TL "config load failed: $($_.Exception.Message)" }
 }
 function Save-SpConfig {
@@ -155,13 +156,14 @@ function Save-SpConfig {
             sdrFloor = $script:SpSdrFloorVal
             hdrFull  = $script:SpHdrFull
             hdrFloor = $script:SpHdrFloorVal
+            fadeMs   = $script:SpFadeMs
         } | ConvertTo-Json | Out-File -LiteralPath $script:SpCfgFile -Encoding utf8 -Force
     } catch { TL "config save failed: $($_.Exception.Message)" }
 }
 function Show-SpSettings {
     $f = New-Object System.Windows.Forms.Form
     $f.Text = '副屏亮度映射'
-    $f.ClientSize = New-Object System.Drawing.Size(348, 250)
+    $f.ClientSize = New-Object System.Drawing.Size(348, 292)
     $f.StartPosition = 'CenterScreen'
     $f.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $f.MaximizeBox = $false
@@ -172,7 +174,8 @@ function Show-SpSettings {
         @{ text = 'SDR：主屏达到此值 → 副屏满亮'; value = $script:SpSdrFull;     max = 100; y = 14;  suffix = '%' },
         @{ text = 'SDR：主屏最低时 → 副屏下限';   value = $script:SpSdrFloorVal; max = 255; y = 46;  suffix = '' },
         @{ text = 'HDR：主屏达到此值 → 副屏满亮'; value = $script:SpHdrFull;     max = 100; y = 96;  suffix = '%' },
-        @{ text = 'HDR：主屏最低时 → 副屏下限';   value = $script:SpHdrFloorVal; max = 255; y = 128; suffix = '' }
+        @{ text = 'HDR：主屏最低时 → 副屏下限';   value = $script:SpHdrFloorVal; max = 255; y = 128; suffix = '' },
+        @{ text = '渐变过渡时长（毫秒）';        value = $script:SpFadeMs;      max = 2000; min = 0; y = 160; suffix = 'ms' }
     )
 
     $nums = @()
@@ -184,7 +187,7 @@ function Show-SpSettings {
         $f.Controls.Add($lbl)
 
         $n = New-Object System.Windows.Forms.NumericUpDown
-        $n.Minimum = 1
+        $n.Minimum = if ($null -ne $d.min) { $d.min } else { 1 }
         $n.Maximum = $d.max
         $n.Value = [decimal]$d.value
         $n.Location = New-Object System.Drawing.Point(242, $d.y)
@@ -195,21 +198,21 @@ function Show-SpSettings {
 
     $hint = New-Object System.Windows.Forms.Label
     $hint.Text = '下限单位为 0-255（10 ≈ 4%，255 = 满亮）'
-    $hint.Location = New-Object System.Drawing.Point(16, 160)
+    $hint.Location = New-Object System.Drawing.Point(16, 196)
     $hint.Size = New-Object System.Drawing.Size(314, 20)
     $hint.ForeColor = [System.Drawing.Color]::Gray
     $f.Controls.Add($hint)
 
     $ok = New-Object System.Windows.Forms.Button
     $ok.Text = '保存'
-    $ok.Location = New-Object System.Drawing.Point(130, 198)
+    $ok.Location = New-Object System.Drawing.Point(130, 234)
     $ok.Size = New-Object System.Drawing.Size(90, 30)
     $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
     $f.Controls.Add($ok)
 
     $cancel = New-Object System.Windows.Forms.Button
     $cancel.Text = '取消'
-    $cancel.Location = New-Object System.Drawing.Point(232, 198)
+    $cancel.Location = New-Object System.Drawing.Point(232, 234)
     $cancel.Size = New-Object System.Drawing.Size(90, 30)
     $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $f.Controls.Add($cancel)
@@ -222,10 +225,11 @@ function Show-SpSettings {
         $script:SpSdrFloorVal = [int]$nums[1].Value
         $script:SpHdrFull     = [int]$nums[2].Value
         $script:SpHdrFloorVal = [int]$nums[3].Value
+        $script:SpFadeMs      = [int]$nums[4].Value
         if ($script:SpSdrFull -lt 1) { $script:SpSdrFull = 1 }
         if ($script:SpHdrFull -lt 1) { $script:SpHdrFull = 1 }
         Save-SpConfig
-        TL "mapping saved: sdr=$($script:SpSdrFull)/$($script:SpSdrFloorVal) hdr=$($script:SpHdrFull)/$($script:SpHdrFloorVal)"
+        TL "mapping saved: sdr=$($script:SpSdrFull)/$($script:SpSdrFloorVal) hdr=$($script:SpHdrFull)/$($script:SpHdrFloorVal) fade=$($script:SpFadeMs)ms"
         try { Sync-ScreenPad } catch { }
     }
     $f.Dispose()
@@ -233,6 +237,12 @@ function Show-SpSettings {
 Load-SpConfig
 
 $script:SpBurstUntil = [datetime]::MinValue
+$script:SpCurVal = -1
+$script:SpTarget = -1
+$script:SpFadeMs = 480
+$script:SpFastMs = 20
+$script:SpFadeFrom = -1
+$script:SpFadeStart = [datetime]::MinValue
 $script:SpEnabled = $true
 
 function Get-SpEnabled {
@@ -276,13 +286,20 @@ function Sync-ScreenPad {
         if ($val -gt 255) { $val = 255 }
         if ($val -lt $script:SpSdrFloorVal) { $val = $script:SpSdrFloorVal }
     }
-    $cur = -1
-    try { $cur = ([AtkAcpi]::Read([uint32]0x00050032)) -band 0xFF } catch { }
-    if ($cur -eq $val) { $script:SpLast = $val; return }
-    $r = -1
-    try { $r = [AtkAcpi]::Write([uint32]0x00050032, $val) } catch { TL "screenpad exc: $($_.Exception.Message)"; return }
-    if ($r -eq 1) { $script:SpLast = $val; $script:SpBurstUntil = (Get-Date).AddSeconds(3); TL "screenpad -> $val/255 (main=$main% mode=$(if ($hdr -eq $true) { 'hdr' } else { 'sdr' }))" }
-    else { TL "screenpad write failed result=$r" }
+    if ($script:SpCurVal -lt 0) {
+        try { $script:SpCurVal = ([AtkAcpi]::Read([uint32]0x00050032)) -band 0xFF } catch { $script:SpCurVal = 0 }
+    }
+    if ($script:SpCurVal -eq $val) { $script:SpTarget = $val; $script:SpLast = $val; return }
+    if (-not $fadeT.Enabled) {
+        $script:SpFadeFrom  = $script:SpCurVal
+        $script:SpFadeStart = Get-Date
+    }
+    if ($val -ne $script:SpTarget) {
+        $script:SpTarget = $val
+        TL "screenpad target $val/255 (main=$main% mode=$(if ($hdr -eq $true) { 'hdr' } else { 'sdr' }))"
+    }
+    $script:SpBurstUntil = (Get-Date).AddSeconds(3)
+    try { if (-not $fadeT.Enabled) { $fadeT.Start() } } catch { }
 }
 
 function Get-HdrEnabled {
@@ -548,7 +565,7 @@ $poll.Start()
 # ---------------- ScreenPad brightness timer ----------------
 $script:SpEnabled = Get-SpEnabled
 $brT = New-Object System.Windows.Forms.Timer
-$brT.Interval = 300
+$brT.Interval = $script:SpFastMs
 $brT.add_Tick({
     try {
         Sync-ScreenPad
@@ -560,6 +577,29 @@ $brT.add_Tick({
     } catch { }
 })
 $brT.Start()
+
+# ---------------- brightness fade timer ----------------
+$fadeT = New-Object System.Windows.Forms.Timer
+$fadeT.Interval = 15
+$fadeT.add_Tick({
+    try {
+        $to = $script:SpTarget
+        if ($to -lt 0) { $fadeT.Stop(); return }
+        $el = ((Get-Date) - $script:SpFadeStart).TotalMilliseconds
+        if ($el -ge $script:SpFadeMs) {
+            $v = $to
+        } else {
+            $p = $el / $script:SpFadeMs
+            $ease = $p * $p * (3 - 2 * $p)
+            $v = [int][math]::Round($script:SpFadeFrom + ($to - $script:SpFadeFrom) * $ease)
+        }
+        if ($v -ne $script:SpCurVal) {
+            $r = [AtkAcpi]::Write([uint32]0x00050032, $v)
+            if ($r -eq 1) { $script:SpCurVal = $v } else { $fadeT.Stop(); TL "fade write failed result=$r"; return }
+        }
+        if ($v -eq $to -and $el -ge $script:SpFadeMs) { $fadeT.Stop() }
+    } catch { }
+})
 
 
 # ---------------- test mode ----------------
@@ -606,7 +646,7 @@ function On-DisplayChangedCore {
         if ($now -eq $script:LastHdr) { return }
         $script:LastHdr = $now
         TL "hdr changed -> $now (SystemEvents.DisplaySettingsChanged)"
-        try { $script:SpBurstUntil = (Get-Date).AddSeconds(6); if (-not $brT.Enabled) { $brT.Interval = 300; $brT.Start() } } catch { }
+        try { $script:SpBurstUntil = (Get-Date).AddSeconds(6); if (-not $brT.Enabled) { $brT.Interval = $script:SpFastMs; $brT.Start() } } catch { }
         try { Sync-ScreenPad } catch { }
         if ($now) {
             TL 'hdr ON -> re-apply patch'
@@ -692,7 +732,7 @@ try {
         if (-not $watched) { return }
         if ($ev -eq 0x8002) {
             $script:SpPeekCount++
-            try { if (-not $brT.Enabled) { $brT.Interval = 300; $brT.Start() } } catch { }
+            try { if (-not $brT.Enabled) { $brT.Interval = $script:SpFastMs; $brT.Start() } } catch { }
             TL "panel shown ($cls) -> fast poll, open=$($script:SpPeekCount)"
         } elseif ($ev -eq 0x8003) {
             if ($script:SpPeekCount -gt 0) { $script:SpPeekCount-- }

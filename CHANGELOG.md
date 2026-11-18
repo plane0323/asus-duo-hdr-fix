@@ -2,6 +2,24 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.3.0] - 2026-11-18
+
+### 新增：亮度过渡渐变
+
+- 副屏亮度不再硬跳，改为平滑过渡
+- 曲线使用 smoothstep（慢起步 → 中段快 → 慢收尾）
+- 默认 480ms，取自微软平滑亮度规范的硬上限 500ms 减去约 20ms 轮询延迟
+- 过渡进行中目标继续变化时只移动终点、不重置起点
+
+### 新增：过渡时长可配置
+
+- 「亮度映射设置…」增加「渐变过渡时长（毫秒）」，范围 0–2000
+- 写入 `eotf_brightness.json` 的 `fadeMs`，启动时读回
+
+### 修复
+
+- 渐变被每 20ms 一次的轮询反复重置，导致实际过渡 1714ms（应为 270ms）
+
 ## [1.2.0] - 2026-11-17
 
 ### 新增：SDR / HDR 双模式映射
@@ -68,6 +86,7 @@
 
 本项目的存在意义是绕开一个特定死锁：外部强杀 `dwm.exe` 时，`AsusScreenXpert` 在显示拓扑变更路径上可能导致整机硬锁死（无蓝屏、无 dump、无 TDR）。上游 `dwm_eotf_rs` 每次打补丁都会强杀 DWM，因此在受影响机型上不可直接使用。
 
+[1.3.0]: https://github.com/plane0323/asus-duo-hdr-fix/releases/tag/v1.3.0
 [1.2.0]: https://github.com/plane0323/asus-duo-hdr-fix/releases/tag/v1.2.0
 [1.1.0]: https://github.com/plane0323/asus-duo-hdr-fix/releases/tag/v1.1.0
 [1.0.0]: https://github.com/plane0323/asus-duo-hdr-fix/releases/tag/v1.0.0

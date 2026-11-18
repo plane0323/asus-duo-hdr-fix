@@ -63,7 +63,15 @@ SDR 与 HDR 各有一条独立映射，两端都能在托盘里配置：
 | SDR | 28% | 84/255 |
 | HDR | 50% | 42/255 |
 
-托盘菜单「亮度映射设置…」可修改这四个值，保存在安装目录的 `eotf_brightness.json`，重启后自动读回。**不同屏幕的观感差异很大，换机型不用改代码。**
+托盘菜单「亮度映射设置…」可修改这四个值（外加过渡时长），保存在安装目录的 `eotf_brightness.json`，重启后自动读回。**不同屏幕的观感差异很大，换机型不用改代码。**
+
+### 亮度过渡
+
+副屏不是硬跳，而是渐变过渡。曲线用 smoothstep（慢起步 → 中段快 → 慢收尾），默认 **480ms**。
+
+时长依据是微软对平滑亮度的唯一硬指标 —— [Smooth transitions](https://learn.microsoft.com/en-us/previous-versions/windows/hardware/design/dn613997(v=vs.85))：`the transition must complete in less than 500 ms`，且原文明确 `Microsoft has not defined any particular curve`（曲线由显卡驱动 + 面板厂自定，且在驱动层，软件侧读不到）。所以这里取 500ms 上限减去约 20ms 的轮询延迟。
+
+过渡进行中若目标继续变化，只移动终点、不重置起点 —— 否则每次轮询都会把渐变重置，实测会从 270ms 退化成 1714ms。
 
 触发方式是**面板事件钩子**：`SetWinEventHook` 监听 `ControlCenterWindow`（Win+A）与「设置」应用（Win+I）的显示/隐藏。
 
@@ -106,7 +114,7 @@ SDR 与 HDR 各有一条独立映射，两端都能在托盘里配置：
 | MPO 多平面叠加 | 切换 MPO，会重启 DWM 生效 |
 | 副屏栈（冰刃 Duo） | 手动停止 / 启动副屏栈 |
 | 副屏亮度跟随主屏 | 按 SDR/HDR 各自的映射区间跟随；关闭后副屏恢复 100% |
-| 亮度映射设置… | 配置 SDR/HDR 的满亮主屏亮度与副屏下限 |
+| 亮度映射设置… | 配置 SDR/HDR 的满亮主屏亮度、副屏下限与渐变过渡时长 |
 | 开机自启 | 注册/删除计划任务，并同步副屏栈启动类型 |
 
 ## 卸载
